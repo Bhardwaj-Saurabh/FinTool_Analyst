@@ -67,23 +67,45 @@ class FunctionToolsManager:
     
     def _configure_settings(self):
         """Configure LlamaIndex settings
-        
+
         TODO: Set up the LLM for SQL generation and other AI tasks
-        
+
         Requirements:
         - Create OpenAI LLM with "gpt-3.5-turbo" model and temperature=0
         - Set Settings.llm and Settings.embed_model
         - Store LLM reference in self.llm for use in tools
-        
+
         IMPORTANT NOTE FOR VOCAREUM:
         LlamaIndex requires the api_base parameter to work with Vocareum's OpenAI endpoint.
         Get the base URL from environment: os.getenv("OPENAI_API_BASE", "https://openai.vocareum.com/v1")
         Pass it as api_base parameter to both OpenAI() and OpenAIEmbedding() constructors.
-        
+
         Hint: This is similar to document_tools configuration
         """
-        # YOUR CODE HERE
-        pass
+        import os
+
+        # Get the Vocareum API base URL from environment
+        api_base = os.getenv("OPENAI_API_BASE", "https://openai.vocareum.com/v1")
+
+        # Configure OpenAI LLM with gpt-3.5-turbo and temperature=0
+        self.llm = OpenAI(
+            model="gpt-3.5-turbo",
+            temperature=0,
+            api_base=api_base
+        )
+
+        # Configure OpenAI embeddings
+        embed_model = OpenAIEmbedding(
+            model="text-embedding-ada-002",
+            api_base=api_base
+        )
+
+        # Set global Settings
+        Settings.llm = self.llm
+        Settings.embed_model = embed_model
+
+        if self.verbose:
+            print("✅ LlamaIndex settings configured with OpenAI models")
     
     def _get_database_schema(self) -> str:
         """Get enhanced database schema with relationships for SQL generation
@@ -225,32 +247,101 @@ KEY TIPS:
             
             def generate_sql(query_text: str, error_context: str = None) -> str:
                 """Generate SQL query from natural language using LLM"""
-                # TODO: Build prompt that includes database schema and query
-                # Handle error_context for retry logic if previous query failed
+                # Build prompt that includes database schema and query
+                prompt = f"""You are a SQL expert. Generate a SQLite query to answer the question.
+
+Database Schema:
+{self.db_schema}
+
+Question: {query_text}
+"""
+                # Add error context if this is a retry
+                if error_context:
+                    prompt += f"\n\nPrevious attempt failed with error: {error_context}\nPlease fix the SQL query."
+
+                prompt += """
+
+IMPORTANT RULES:
+- Return ONLY the SQL query, no explanations
+- Use proper SQLite syntax
+- Do not use markdown code blocks
+- Return a single SQL statement only
+- Use JOIN clauses properly for related data
+
+SQL Query:"""
+
                 # Use self.llm.complete() to generate SQL
+                response = self.llm.complete(prompt)
+                sql = str(response).strip()
+
                 # Clean up response (remove markdown, handle multiple statements)
-                # YOUR CODE HERE
-                
-                return "SELECT 1"  # Placeholder - replace with your implementation
+                # Remove markdown code blocks if present
+                if "```sql" in sql:
+                    sql = sql.split("```sql")[1].split("```")[0].strip()
+                elif "```" in sql:
+                    sql = sql.split("```")[1].split("```")[0].strip()
+
+                # Remove any text after semicolon (multiple statements)
+                if ";" in sql:
+                    sql = sql.split(";")[0].strip() + ";"
+
+                return sql
             
             def execute_sql(sql_query: str) -> Tuple[bool, list, list, str]:
                 """Execute SQL and return (success, results, column_names, error)"""
-                # TODO: Connect to database, execute query, extract results and column names
-                # Return tuple: (success_flag, results_list, column_names_list, error_message)
-                # YOUR CODE HERE
-                
-                return False, None, None, "Not implemented"
+                try:
+                    # Connect to database
+                    conn = sqlite3.connect(self.db_path)
+                    cursor = conn.cursor()
+
+                    # Execute query
+                    cursor.execute(sql_query)
+
+                    # Extract results and column names
+                    results = cursor.fetchall()
+                    column_names = [description[0] for description in cursor.description] if cursor.description else []
+
+                    conn.close()
+
+                    # Return success with results and column names
+                    return True, results, column_names, None
+
+                except Exception as e:
+                    # Return failure with error message
+                    return False, None, None, str(e)
             
             try:
-                # TODO: Implement the main database query logic
                 # 1. Generate SQL from natural language query
+                sql_query = generate_sql(query)
+
                 # 2. Execute the SQL and get results
-                # 3. Format results with column names
-                # 4. If execution fails, retry with error context
-                # YOUR CODE HERE
-                
-                return "Database query not implemented yet"
-                        
+                success, results, column_names, error = execute_sql(sql_query)
+
+                # 3. If execution fails, retry with error context
+                if not success and error:
+                    # Retry with error context
+                    sql_query = generate_sql(query, error_context=error)
+                    success, results, column_names, error = execute_sql(sql_query)
+
+                    # If still fails, return error
+                    if not success:
+                        return f"SQL Query: {sql_query}\n\nExecution Error: {error}"
+
+                # 4. Format results with column names
+                if not results:
+                    return f"SQL Query: {sql_query}\n\nNo results found."
+
+                # Format results as a table
+                result_str = f"SQL Query: {sql_query}\n\n"
+                result_str += "Results:\n"
+                result_str += " | ".join(column_names) + "\n"
+                result_str += "-" * (len(" | ".join(column_names))) + "\n"
+
+                for row in results:
+                    result_str += " | ".join(str(val) for val in row) + "\n"
+
+                return result_str
+
             except Exception as e:
                 return f"Database system error: {e}"
         
@@ -270,25 +361,110 @@ KEY TIPS:
             
             def get_real_stock_data(symbol: str) -> dict:
                 """Fetch real stock data from Yahoo Finance API"""
-                # TODO: Make API call to Yahoo Finance
-                # URL: https://query1.finance.yahoo.com/v8/finance/chart/{symbol}
-                # Extract: current price, previous close, volume, market cap
-                # Calculate: price change and change percentage
-                # Return: Dictionary with stock data and success flag
-                # YOUR CODE HERE
-                
-                return {'success': False, 'error': 'Not implemented'}
+                try:
+                    import requests
+
+                    # Make API call to Yahoo Finance
+                    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+                    response = requests.get(url, timeout=10)
+
+                    if response.status_code != 200:
+                        return {'success': False, 'error': f'API returned status {response.status_code}'}
+
+                    data = response.json()
+
+                    # Extract data from response
+                    if 'chart' not in data or 'result' not in data['chart'] or not data['chart']['result']:
+                        return {'success': False, 'error': 'Invalid API response format'}
+
+                    result = data['chart']['result'][0]
+                    meta = result.get('meta', {})
+
+                    # Extract: current price, previous close, volume, market cap
+                    current_price = meta.get('regularMarketPrice', 0)
+                    previous_close = meta.get('previousClose', 0)
+                    volume = meta.get('regularMarketVolume', 0)
+                    market_cap = meta.get('marketCap', 0)
+
+                    # Calculate: price change and change percentage
+                    price_change = current_price - previous_close
+                    change_percent = (price_change / previous_close * 100) if previous_close != 0 else 0
+
+                    # Return: Dictionary with stock data and success flag
+                    return {
+                        'success': True,
+                        'symbol': symbol,
+                        'current_price': current_price,
+                        'previous_close': previous_close,
+                        'price_change': price_change,
+                        'change_percent': change_percent,
+                        'volume': volume,
+                        'market_cap': market_cap
+                    }
+
+                except Exception as e:
+                    return {'success': False, 'error': str(e)}
             
             try:
-                # TODO: Identify companies mentioned in the query
-                # Map company names/symbols to ticker symbols (AAPL, TSLA, GOOGL)
+                # Identify companies mentioned in the query
+                # Map company names/symbols to ticker symbols
+                query_lower = query.lower()
+                companies_to_fetch = []
+
+                company_mapping = {
+                    'apple': 'AAPL',
+                    'aapl': 'AAPL',
+                    'tesla': 'TSLA',
+                    'tsla': 'TSLA',
+                    'google': 'GOOGL',
+                    'googl': 'GOOGL',
+                    'alphabet': 'GOOGL'
+                }
+
+                # Check which companies are mentioned
+                for name, symbol in company_mapping.items():
+                    if name in query_lower:
+                        if symbol not in companies_to_fetch:
+                            companies_to_fetch.append(symbol)
+
+                # If no specific company mentioned, return all three
+                if not companies_to_fetch:
+                    companies_to_fetch = ['AAPL', 'TSLA', 'GOOGL']
+
                 # Fetch stock data for each identified company
+                results = []
+                for symbol in companies_to_fetch:
+                    stock_data = get_real_stock_data(symbol)
+
+                    if stock_data['success']:
+                        results.append(stock_data)
+                    else:
+                        # Handle API failures with appropriate fallbacks
+                        results.append({
+                            'symbol': symbol,
+                            'error': stock_data.get('error', 'Unknown error')
+                        })
+
                 # Format results with price, change, volume
-                # Handle API failures with appropriate fallbacks
-                # YOUR CODE HERE
-                
-                return "Market data tool not implemented yet"
-                    
+                if not results:
+                    return "No market data available for the requested companies."
+
+                output = "Current Market Data:\n\n"
+                for data in results:
+                    if 'error' in data:
+                        output += f"{data['symbol']}: Error fetching data - {data['error']}\n"
+                    else:
+                        change_symbol = "+" if data['price_change'] >= 0 else ""
+                        output += f"{data['symbol']}:\n"
+                        output += f"  Current Price: ${data['current_price']:.2f}\n"
+                        output += f"  Change: {change_symbol}${data['price_change']:.2f} ({change_symbol}{data['change_percent']:.2f}%)\n"
+                        output += f"  Volume: {data['volume']:,}\n"
+                        if data['market_cap']:
+                            output += f"  Market Cap: ${data['market_cap']:,.0f}\n"
+                        output += "\n"
+
+                return output.strip()
+
             except Exception as e:
                 return f"Market data error: {e}"
         
@@ -309,40 +485,153 @@ KEY TIPS:
             
             def detect_pii_fields(field_names: list) -> set:
                 """Detect which fields contain PII based on field names"""
-                # TODO: Create patterns for common PII field names
-                # Check field names against patterns (email, phone, names, address, ssn, etc.)
-                # Return set of detected PII field names
-                # YOUR CODE HERE
-                
-                return set()  # Placeholder
+                # Create patterns for common PII field names
+                pii_patterns = [
+                    'email', 'phone', 'first_name', 'last_name', 'name',
+                    'address', 'ssn', 'social_security', 'birth_date', 'dob',
+                    'passport', 'license', 'credit_card', 'account_number'
+                ]
+
+                detected_pii = set()
+
+                # Check field names against patterns
+                for field in field_names:
+                    field_lower = field.lower()
+                    for pattern in pii_patterns:
+                        if pattern in field_lower:
+                            detected_pii.add(field)
+                            break
+
+                return detected_pii
             
             def mask_field_value(field_name: str, value: str) -> str:
                 """Apply appropriate masking based on field type"""
-                # TODO: Implement field-specific masking strategies
-                # Examples: abc@gmail.com -> ***@gmail.com
-                #          123-456-7890 -> ***-***-7890
-                #          John -> ****
-                # YOUR CODE HERE
-                
-                return str(value)  # Placeholder
+                if value is None:
+                    return str(value)
+
+                value_str = str(value)
+                field_lower = field_name.lower()
+
+                # Email masking: abc@gmail.com -> ***@gmail.com
+                if 'email' in field_lower:
+                    if '@' in value_str:
+                        return '***@' + value_str.split('@')[1]
+                    return '***'
+
+                # Phone masking: 123-456-7890 -> ***-***-7890
+                if 'phone' in field_lower:
+                    if '-' in value_str:
+                        parts = value_str.split('-')
+                        return '-'.join(['***'] * (len(parts) - 1) + [parts[-1]])
+                    return '***'
+
+                # Name masking: John -> ****
+                if 'name' in field_lower:
+                    return '****'
+
+                # Default masking for other PII fields
+                return '****'
             
-            # TODO: Parse column names and detect PII fields
-            # Parse database results line by line
-            # For each line with PII fields, apply masking
-            # Add notice about which fields were masked
-            # YOUR CODE HERE
-            
-            return database_results  # Placeholder - no masking implemented
+            try:
+                # Parse column names from string format
+                import ast
+                try:
+                    # Try to parse as Python list string
+                    column_list = ast.literal_eval(column_names)
+                except:
+                    # If that fails, try comma-separated or other format
+                    if isinstance(column_names, str):
+                        column_list = [col.strip() for col in column_names.replace('[', '').replace(']', '').replace("'", "").split(',')]
+                    else:
+                        column_list = column_names
+
+                # Detect PII fields
+                pii_fields = detect_pii_fields(column_list)
+
+                if not pii_fields:
+                    # No PII detected, return original results
+                    return database_results
+
+                # Parse database results line by line and apply masking
+                lines = database_results.split('\n')
+                masked_lines = []
+
+                for line in lines:
+                    # Skip empty lines or separator lines
+                    if not line.strip() or line.startswith('-') or line.startswith('='):
+                        masked_lines.append(line)
+                        continue
+
+                    # Check if this is a data line (contains pipe separators)
+                    if '|' in line:
+                        parts = [p.strip() for p in line.split('|')]
+
+                        # Apply masking to PII columns
+                        masked_parts = []
+                        for i, part in enumerate(parts):
+                            if i < len(column_list) and column_list[i] in pii_fields:
+                                masked_parts.append(mask_field_value(column_list[i], part))
+                            else:
+                                masked_parts.append(part)
+
+                        masked_lines.append(' | '.join(masked_parts))
+                    else:
+                        masked_lines.append(line)
+
+                # Add notice about which fields were masked
+                result = '\n'.join(masked_lines)
+                if pii_fields:
+                    result += f"\n\n[PII Protection Applied: {', '.join(sorted(pii_fields))} fields masked]"
+
+                return result
+
+            except Exception as e:
+                # If parsing fails, return original with warning
+                return f"{database_results}\n\n[PII Protection Warning: Could not parse results - {e}]"
         
-        # TODO: Create FunctionTool objects for each function
-        # Wrap each function with FunctionTool.from_defaults()
-        # Provide descriptive names and descriptions for agent routing
-        # Add all tools to self.function_tools list
-        # YOUR CODE HERE
-        
+        # Create FunctionTool objects for each function
+        # 1. Database Query Tool
+        db_tool = FunctionTool.from_defaults(
+            fn=database_query_tool,
+            name="database_query_tool",
+            description=(
+                "Query the customer portfolio database using natural language. "
+                "This tool generates SQL queries from natural language questions and returns "
+                "customer information, portfolio holdings, investment positions, and financial data. "
+                "Use this to find customer details, stock holdings, investment profiles, and account information."
+            )
+        )
+        self.function_tools.append(db_tool)
+
+        # 2. Market Search Tool
+        market_tool = FunctionTool.from_defaults(
+            fn=finance_market_search_tool,
+            name="finance_market_search_tool",
+            description=(
+                "Get real-time current stock market data and prices for Apple (AAPL), "
+                "Tesla (TSLA), and Google (GOOGL). Returns current price, price changes, "
+                "trading volume, and market capitalization. Use this for live market information "
+                "and current stock performance data."
+            )
+        )
+        self.function_tools.append(market_tool)
+
+        # 3. PII Protection Tool
+        pii_tool = FunctionTool.from_defaults(
+            fn=pii_protection_tool,
+            name="pii_protection_tool",
+            description=(
+                "Automatically detect and mask personally identifiable information (PII) "
+                "in database results. Protects sensitive data like names, emails, phone numbers, "
+                "and addresses by masking them before display. Use this tool to process database "
+                "results that may contain customer personal information."
+            )
+        )
+        self.function_tools.append(pii_tool)
+
         if self.verbose:
             print("   ✅ Function tools created")
-        
+
         return self.function_tools
     
     def get_tools(self):

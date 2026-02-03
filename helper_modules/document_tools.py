@@ -71,23 +71,41 @@ class DocumentToolsManager:
     
     def _configure_settings(self):
         """Configure LlamaIndex settings with OpenAI models
-        
+
         TODO: Set up the global LlamaIndex settings for LLM and embeddings
-        
+
         Requirements:
         - Use OpenAI LLM with "gpt-3.5-turbo" model and temperature=0
         - Use OpenAI embeddings with "text-embedding-ada-002" model
         - Set these on Settings.llm and Settings.embed_model
-        
+
         IMPORTANT NOTE FOR VOCAREUM:
         LlamaIndex requires the api_base parameter to work with Vocareum's OpenAI endpoint.
         Get the base URL from environment: os.getenv("OPENAI_API_BASE", "https://openai.vocareum.com/v1")
         Pass it as api_base parameter to both OpenAI() and OpenAIEmbedding() constructors.
-        
+
         Hint: All necessary imports are already provided at the top of this file.
         """
-        # YOUR CODE HERE
-        pass
+        import os
+
+        # Get the Vocareum API base URL from environment
+        api_base = os.getenv("OPENAI_API_BASE", "https://openai.vocareum.com/v1")
+
+        # Configure OpenAI LLM with gpt-3.5-turbo and temperature=0
+        Settings.llm = OpenAI(
+            model="gpt-3.5-turbo",
+            temperature=0,
+            api_base=api_base
+        )
+
+        # Configure OpenAI embeddings with text-embedding-ada-002
+        Settings.embed_model = OpenAIEmbedding(
+            model="text-embedding-ada-002",
+            api_base=api_base
+        )
+
+        if self.verbose:
+            print("✅ LlamaIndex settings configured with OpenAI models")
     
     def build_document_tools(self):
         """Build document query engines for each company
@@ -103,10 +121,14 @@ class DocumentToolsManager:
         
         # Clear existing tools first to avoid duplicates
         self.document_tools = []
-        
-        # TODO: Create a text splitter for chunking documents
-        # YOUR CODE HERE
-        
+
+        # Create a text splitter for chunking documents
+        # Using SentenceSplitter with reasonable chunk size and overlap
+        text_splitter = SentenceSplitter(
+            chunk_size=1024,
+            chunk_overlap=200
+        )
+
         for company in self.companies:
             # Determine company name for tool description
             company_name = self.company_info[company]["name"].split()[0].lower()
@@ -126,18 +148,52 @@ class DocumentToolsManager:
                 continue
             
             try:
-                # TODO: Implement document processing pipeline
-                # YOUR CODE HERE
-                # - Load the PDF document
-                # - Split into chunks/nodes
-                # - Add metadata (company info, document type)
-                # - Build vector index
-                # - Create query engine
-                # - Wrap in QueryEngineTool with descriptive name and description
-                
+                # Load the PDF document
+                documents = SimpleDirectoryReader(
+                    input_files=[str(pdf_path)]
+                ).load_data()
+
+                # Split documents into chunks/nodes using the text splitter
+                nodes = text_splitter.get_nodes_from_documents(documents)
+
+                # Add metadata to each node
+                for node in nodes:
+                    node.metadata.update({
+                        "company": company,
+                        "company_name": self.company_info[company]["name"],
+                        "sector": self.company_info[company]["sector"],
+                        "document_type": "10-K Filing",
+                        "year": "2024"
+                    })
+
+                # Build vector index from the nodes
+                index = VectorStoreIndex(nodes)
+
+                # Create query engine from the index
+                query_engine = index.as_query_engine()
+
+                # Create descriptive tool description
+                full_company_name = self.company_info[company]["name"]
+                description = (
+                    f"Provides detailed information from {full_company_name}'s "
+                    f"2024 SEC 10-K annual filing. Use this tool to query business "
+                    f"operations, financial performance, risk factors, management "
+                    f"discussion and analysis, and other regulatory disclosures for {company}."
+                )
+
+                # Wrap in QueryEngineTool with descriptive name and description
+                tool = QueryEngineTool.from_defaults(
+                    query_engine=query_engine,
+                    name=tool_name,
+                    description=description
+                )
+
+                # Add the tool to our list
+                self.document_tools.append(tool)
+
                 if self.verbose:
                     print(f"   ✅ {company} tool created: {tool_name}")
-                    
+
             except Exception as e:
                 if self.verbose:
                     print(f"   ❌ Error building {company} tool: {e}")

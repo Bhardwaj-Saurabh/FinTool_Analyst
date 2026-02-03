@@ -298,20 +298,23 @@ class FunctionToolsTest:
         try:
             # Test simple query (this will likely fail until implemented)
             result = db_tool.call("Show me all customers")
-            
-            if "not implemented" in result.lower():
+
+            # Convert ToolOutput to string
+            result_str = str(result.content) if hasattr(result, 'content') else str(result)
+
+            if "not implemented" in result_str.lower():
                 self.print_failure(
                     "Database tool not implemented yet",
                     "Complete the database_query_tool function implementation"
                 )
-            elif "error" in result.lower():
+            elif "error" in result_str.lower():
                 self.print_failure(
-                    f"Database tool returned error: {result[:100]}...",
+                    f"Database tool returned error: {result_str[:100]}...",
                     "Check your SQL generation and database connection logic"
                 )
             else:
                 self.print_success("Database tool executed without errors")
-                
+
         except Exception as e:
             self.print_failure(
                 f"Error calling database tool: {e}",
@@ -472,6 +475,8 @@ def main():
 if __name__ == "__main__":
     main()
 
+"""
+Pytest Test Suite
 Usage:
     python -m pytest tests/test_function_tools.py -v
     python -m pytest tests/test_function_tools.py::test_initialization -v
