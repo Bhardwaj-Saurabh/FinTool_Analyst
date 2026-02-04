@@ -59,9 +59,12 @@ class FunctionToolsManager:
         
         # Storage for tools
         self.function_tools = []
-        
+
         self._configure_settings()
-        
+
+        # Create tools automatically on initialization
+        self.create_function_tools()
+
         if self.verbose:
             print("✅ Function Tools Manager Initialized")
     
@@ -469,16 +472,16 @@ SQL Query:"""
                 return f"Market data error: {e}"
         
         # 3. PII PROTECTION TOOL
-        def pii_protection_tool(database_results: str, column_names: str) -> str:
+        def pii_protection_tool(database_results: str, column_names: str = None) -> str:
             """Automatically mask PII fields in database results
-            
+
             This tool identifies and masks personally identifiable information
             in database query results based on column names and content patterns.
-            
+
             Args:
                 database_results: Raw database results as string
-                column_names: List of column names (as string)
-                
+                column_names: List of column names (as string), optional
+
             Returns:
                 String with PII fields masked for privacy protection
             """
@@ -533,6 +536,48 @@ SQL Query:"""
                 return '****'
             
             try:
+                # If no column names provided, apply pattern-based masking
+                if column_names is None:
+                    import re
+                    protected_text = database_results
+
+                    # Email pattern masking: preserve domain
+                    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+                    emails = re.findall(email_pattern, protected_text)
+                    for email in emails:
+                        domain = email.split('@')[1]
+                        protected_text = protected_text.replace(email, f'***@{domain}')
+
+                    # Phone pattern masking: preserve last 4 digits
+                    # Match both 10-digit (XXX-XXX-XXXX) and 7-digit (XXX-XXXX) formats
+                    phone_patterns = [
+                        r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b',  # 10-digit: 123-456-7890
+                        r'\b\d{3}[-.]?\d{4}\b'              # 7-digit: 555-1234
+                    ]
+
+                    for phone_pattern in phone_patterns:
+                        phones = re.findall(phone_pattern, protected_text)
+                        for phone in phones:
+                            if '-' in phone:
+                                parts = phone.split('-')
+                                if len(parts) == 2:
+                                    # 7-digit format: 555-1234 -> ***-1234
+                                    protected_text = protected_text.replace(phone, '***-' + parts[-1])
+                                else:
+                                    # 10-digit format: 123-456-7890 -> ***-***-7890
+                                    protected_text = protected_text.replace(phone, '***-***-' + parts[-1])
+                            elif '.' in phone:
+                                protected_text = protected_text.replace(phone, '***.***.****')
+                            else:
+                                # Last 4 digits only
+                                protected_text = protected_text.replace(phone, '******' + phone[-4:])
+
+                    # Return with notice if changes were made
+                    if protected_text != database_results:
+                        protected_text += "\n\n[PII Protection Applied: email, phone patterns masked]"
+
+                    return protected_text
+
                 # Parse column names from string format
                 import ast
                 try:
@@ -589,6 +634,11 @@ SQL Query:"""
                 # If parsing fails, return original with warning
                 return f"{database_results}\n\n[PII Protection Warning: Could not parse results - {e}]"
         
+        # Store references to functions for direct testing
+        self.database_query_tool = database_query_tool
+        self.finance_market_search_tool = finance_market_search_tool
+        self.pii_protection_tool = pii_protection_tool
+
         # Create FunctionTool objects for each function
         # 1. Database Query Tool
         db_tool = FunctionTool.from_defaults(

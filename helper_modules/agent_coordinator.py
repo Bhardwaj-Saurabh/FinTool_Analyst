@@ -303,7 +303,82 @@ class AgentCoordinator:
                     break
 
         return detected_pii
-    
+
+    def _simple_routing(self, query: str) -> list:
+        """Simple keyword-based routing for tool selection
+
+        Uses keyword matching to select appropriate tools without LLM overhead.
+
+        Args:
+            query: User's natural language query
+
+        Returns:
+            List of tuples: (tool_name, tool_description, result)
+        """
+        # Ensure tools are initialized
+        if not self._tools_initialized:
+            self.setup()
+            self._tools_initialized = True
+
+        query_lower = query.lower()
+        selected_tools = []
+        all_tools = self.document_tools + self.function_tools
+
+        # Keyword-based selection
+        for tool in all_tools:
+            tool_name = tool.metadata.name if hasattr(tool, 'metadata') else ""
+
+            # Document tools
+            if 'aapl' in tool_name.lower() and ('apple' in query_lower or 'aapl' in query_lower):
+                selected_tools.append(tool)
+            elif 'googl' in tool_name.lower() and ('google' in query_lower or 'googl' in query_lower or 'alphabet' in query_lower):
+                selected_tools.append(tool)
+            elif 'tsla' in tool_name.lower() and ('tesla' in query_lower or 'tsla' in query_lower):
+                selected_tools.append(tool)
+
+            # Function tools
+            elif 'database' in tool_name.lower() and any(kw in query_lower for kw in ['customer', 'portfolio', 'holding', 'database']):
+                selected_tools.append(tool)
+            elif 'market' in tool_name.lower() and any(kw in query_lower for kw in ['price', 'stock', 'market', 'trading']):
+                selected_tools.append(tool)
+            elif 'pii' in tool_name.lower() and any(kw in query_lower for kw in ['protect', 'mask', 'pii', 'privacy']):
+                selected_tools.append(tool)
+
+        # If no tools selected, default to first tool
+        if not selected_tools:
+            selected_tools = [all_tools[0]] if all_tools else []
+
+        # Execute selected tools and return results
+        results = []
+        for tool in selected_tools:
+            tool_name = tool.metadata.name if hasattr(tool, 'metadata') else "unknown"
+            tool_desc = tool.metadata.description if hasattr(tool, 'metadata') else ""
+
+            try:
+                result = tool.call(query)
+                if hasattr(result, 'content'):
+                    result_str = str(result.content)
+                else:
+                    result_str = str(result)
+                results.append((tool_name, tool_desc, result_str))
+            except Exception as e:
+                results.append((tool_name, tool_desc, f"Error: {e}"))
+
+        return results
+
+    def _intelligent_routing(self, query: str) -> list:
+        """LLM-based intelligent routing for tool selection
+
+        Uses LLM to analyze query and select the most appropriate tools.
+        This is a wrapper around _route_query for backward compatibility.
+
+        Args:
+            query: User's natural language query
+
+        Returns:
+            List of tuples: (tool_name, tool_description, result)
+        """
+        return self._route_query(query)
 
     def _route_query(self, query: str) -> List[Tuple[str, str, Any]]:
         """Use LLM to intelligently route query to appropriate tools
@@ -411,7 +486,74 @@ Selected tool indices:"""
                 results.append((tool_name, tool_desc, f"Error: {e}"))
 
         return results
-    
+
+    def _synthesize_results(self, question: str, results: list) -> str:
+        """Synthesize multiple tool results into a comprehensive answer
+
+        Args:
+            question: User's query
+            results: List of results - can be tuples (tool_name, tool_desc, result_str)
+                     or dicts with 'tool' and 'result' keys
+
+        Returns:
+            Synthesized answer string
+        """
+        # Normalize results format
+        normalized_results = []
+        for item in results:
+            if isinstance(item, tuple):
+                # Format: (tool_name, tool_desc, result_str)
+                tool_name, tool_desc, result_str = item
+                normalized_results.append((tool_name, tool_desc, result_str))
+            elif isinstance(item, dict):
+                # Format: {'tool': 'name', 'result': 'result', 'score': 0.9}
+                tool_name = item.get('tool', 'unknown')
+                result_str = item.get('result', '')
+                normalized_results.append((tool_name, '', result_str))
+            else:
+                continue
+
+        if not normalized_results:
+            return "No results to synthesize."
+
+        # Build synthesis prompt
+        results_text = ""
+        for i, (tool_name, tool_desc, result) in enumerate(normalized_results, 1):
+            results_text += f"\n\n--- Source {i}: {tool_name} ---\n{result}\n"
+
+        synthesis_prompt = f"""You are a financial analyst synthesizing information from multiple sources.
+Combine the following information to provide a comprehensive answer to the user's question.
+
+User Question: {question}
+
+Information from Multiple Sources:{results_text}
+
+Instructions:
+- Synthesize the information into a coherent, comprehensive answer
+- Cite which sources provide which information
+- Resolve any conflicts between sources
+- Maintain accuracy and don't add information not present in the sources
+- If PII protection was applied, acknowledge this appropriately
+
+Comprehensive Answer:"""
+
+        try:
+            # Use LLM to synthesize
+            synthesis_response = self.llm.complete(synthesis_prompt)
+            synthesized_answer = str(synthesis_response).strip()
+            return synthesized_answer
+
+        except Exception as e:
+            if self.verbose:
+                print(f"⚠️  Synthesis failed: {e}, returning concatenated results")
+
+            # Fallback: return concatenated results
+            answer = f"Answer (from {len(normalized_results)} sources):\n\n"
+            for tool_name, tool_desc, result in normalized_results:
+                answer += f"\n--- From {tool_name} ---\n{result}\n"
+
+            return answer
+
     def query(self, question: str, verbose: bool = None) -> str:
         """Process query with dynamic tool routing and result synthesis
         
@@ -460,51 +602,16 @@ Selected tool indices:"""
                 print(f"✅ Answer from {tool_name}")
             return result
 
-        # 4. If multiple tool results, synthesize using LLM
+        # 4. If multiple tool results, synthesize using _synthesize_results
         if verbose:
             print("🔄 Synthesizing results from multiple tools...")
 
-        # Build synthesis prompt
-        results_text = ""
-        for i, (tool_name, tool_desc, result) in enumerate(tool_results, 1):
-            results_text += f"\n\n--- Source {i}: {tool_name} ---\n{result}\n"
+        synthesized_answer = self._synthesize_results(question, tool_results)
 
-        synthesis_prompt = f"""You are a financial analyst synthesizing information from multiple sources.
-Combine the following information to provide a comprehensive answer to the user's question.
+        if verbose:
+            print("✅ Synthesis complete")
 
-User Question: {question}
-
-Information from Multiple Sources:{results_text}
-
-Instructions:
-- Synthesize the information into a coherent, comprehensive answer
-- Cite which sources provide which information
-- Resolve any conflicts between sources
-- Maintain accuracy and don't add information not present in the sources
-- If PII protection was applied, acknowledge this appropriately
-
-Comprehensive Answer:"""
-
-        try:
-            # 5. Return comprehensive answer
-            synthesis_response = self.llm.complete(synthesis_prompt)
-            synthesized_answer = str(synthesis_response).strip()
-
-            if verbose:
-                print("✅ Synthesis complete")
-
-            return synthesized_answer
-
-        except Exception as e:
-            if verbose:
-                print(f"⚠️  Synthesis failed: {e}, returning individual results")
-
-            # Fallback: return concatenated results
-            answer = f"Answer (from {len(tool_results)} sources):\n\n"
-            for tool_name, tool_desc, result in tool_results:
-                answer += f"\n--- From {tool_name} ---\n{result}\n"
-
-            return answer
+        return synthesized_answer
     
     def get_available_tools(self) -> Dict[str, Any]:
         """
@@ -550,3 +657,24 @@ Comprehensive Answer:"""
             ],
             "system_ready": system_ready
         }
+
+    def list_available_tools(self) -> list:
+        """
+        Get list of available tool names.
+
+        Returns:
+            List of tool names
+        """
+        tool_names = []
+
+        # Add document tool names
+        for tool in self.document_tools:
+            if hasattr(tool, 'metadata'):
+                tool_names.append(tool.metadata.name)
+
+        # Add function tool names
+        for tool in self.function_tools:
+            if hasattr(tool, 'metadata'):
+                tool_names.append(tool.metadata.name)
+
+        return tool_names

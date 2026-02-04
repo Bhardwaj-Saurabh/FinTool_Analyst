@@ -71,18 +71,20 @@ print()
 # Test 5: Test helper modules
 print("✅ Test 5: Test Helper Modules Import")
 try:
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'helper_modules'))
-    
+    # Add project root to path (go up one level from tests/ directory)
+    project_root = os.path.dirname(os.path.dirname(__file__))
+    sys.path.insert(0, project_root)
+
     # Import agent coordinator
-    from agent_coordinator import AgentCoordinator
+    from helper_modules.agent_coordinator import AgentCoordinator
     print("   ✓ Successfully imported AgentCoordinator")
-    
+
     # Import document tools
-    from document_tools import DocumentToolsManager
+    from helper_modules.document_tools import DocumentToolsManager
     print("   ✓ Successfully imported DocumentToolsManager")
-    
+
     # Import function tools
-    from function_tools import FunctionToolsManager
+    from helper_modules.function_tools import FunctionToolsManager
     print("   ✓ Successfully imported FunctionToolsManager")
 except Exception as e:
     print(f"   ✗ Helper module import failed: {e}")
